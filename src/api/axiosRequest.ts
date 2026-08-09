@@ -3,6 +3,7 @@ import axios, {
   type AxiosResponse,
   type InternalAxiosRequestConfig,
 } from "axios";
+import { getClientId } from "@/utils/clientId";
 
 const axiosRequest: AxiosInstance = axios.create({
   baseURL: "/api",
@@ -14,7 +15,7 @@ const axiosRequest: AxiosInstance = axios.create({
 
 axiosRequest.interceptors.request.use(
   (config: InternalAxiosRequestConfig) => {
-    // 可在此统一附加 token、请求头等
+    config.headers.set("X-Client-Id", getClientId());
     return config;
   },
   (error) => Promise.reject(error),

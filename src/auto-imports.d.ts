@@ -8,5 +8,6 @@
 // biome-ignore lint: disable
 export {}
 declare global {
+  const showConfirmDialog: typeof import('vant/es').showConfirmDialog
   const showToast: typeof import('vant/es').showToast
 }

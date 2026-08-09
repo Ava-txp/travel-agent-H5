@@ -1,4 +1,5 @@
 import axiosRequest from "@/api/axiosRequest";
+import { getClientId } from "@/utils/clientId";
 
 export interface TravelRecommendParams {
   city: string;
@@ -61,27 +62,148 @@ export async function fetchTravelRecommend(
   return data;
 }
 
+export type ChatRole = "user" | "assistant";
+
+export interface ConversationSummary {
+  id: string;
+  title: string;
+  pinned: boolean;
+  updatedAt: number;
+  preview: string;
+}
+
+export interface ConversationMessage {
+  id: string;
+  role: ChatRole;
+  content: string;
+  createdAt: number;
+}
+
+export interface ConversationDetail {
+  id: string;
+  title: string;
+  createdAt: number;
+  updatedAt: number;
+  messages: ConversationMessage[];
+}
+
 export interface ChatStreamEvent {
   type: "chunk" | "done" | "error";
   content?: unknown;
   message?: string;
 }
 
+export interface ChatStreamResult {
+  content: string;
+  conversationId?: string;
+}
+
+export interface StreamTravelChatOptions {
+  message: string;
+  conversationId?: string;
+  onChunk: (chunk: string) => void;
+  signal?: AbortSignal;
+}
+
+type ApiOk<T> = {
+  status: "ok" | "error";
+  data?: T;
+  message?: string;
+};
+
+export async function fetchConversations(
+  signal?: AbortSignal,
+): Promise<ConversationSummary[]> {
+  const { data } = await axiosRequest.get<ApiOk<ConversationSummary[]>>(
+    "/travel/conversations",
+    { signal },
+  );
+  return data.data ?? [];
+}
+
+export async function fetchConversationDetail(
+  id: string,
+  signal?: AbortSignal,
+): Promise<ConversationDetail> {
+  const { data } = await axiosRequest.get<ApiOk<ConversationDetail>>(
+    `/travel/conversations/${id}`,
+    { signal },
+  );
+  if (!data.data) {
+    throw new Error(data.message || "会话不存在");
+  }
+  return data.data;
+}
+
+export async function createConversation(
+  signal?: AbortSignal,
+): Promise<ConversationSummary> {
+  const { data } = await axiosRequest.post<
+    ApiOk<{
+      id: string;
+      title: string;
+      createdAt: number;
+      updatedAt: number;
+    }>
+  >("/travel/conversations", undefined, { signal });
+
+  if (!data.data) {
+    throw new Error(data.message || "创建会话失败");
+  }
+
+  return {
+    id: data.data.id,
+    title: data.data.title,
+    pinned: false,
+    updatedAt: data.data.updatedAt,
+    preview: "",
+  };
+}
+
+export async function deleteConversation(
+  id: string,
+  signal?: AbortSignal,
+): Promise<void> {
+  await axiosRequest.delete<ApiOk<unknown>>(`/travel/conversations/${id}`, {
+    signal,
+  });
+}
+
+export async function updateConversation(
+  id: string,
+  payload: { title?: string; pinned?: boolean },
+  signal?: AbortSignal,
+): Promise<Pick<ConversationSummary, "id" | "title" | "pinned" | "updatedAt">> {
+  const { data } = await axiosRequest.patch<
+    ApiOk<Pick<ConversationSummary, "id" | "title" | "pinned" | "updatedAt">>
+  >(`/travel/conversations/${id}`, payload, { signal });
+
+  if (!data.data) {
+    throw new Error(data.message || "更新会话失败");
+  }
+  return data.data;
+}
+
 /**
  * 流式对话：POST /travel/chat，按 SSE 逐段回调 content。
+ * 传入 conversationId 续聊；省略则后端新建会话，并在 done 中回传 id。
  */
 export async function streamTravelChat(
-  message: string,
-  onChunk: (chunk: string) => void,
-  signal?: AbortSignal,
-): Promise<string> {
+  options: StreamTravelChatOptions,
+): Promise<ChatStreamResult> {
+  const { message, conversationId, onChunk, signal } = options;
+
   const response = await fetch("/api/travel/chat", {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
       Accept: "text/event-stream",
+      "X-Client-Id": getClientId(),
     },
-    body: JSON.stringify({ message }),
+    body: JSON.stringify({
+      message,
+      ...(conversationId ? { conversationId } : {}),
+    }),
     signal,
   });
 
@@ -104,12 +226,13 @@ export async function streamTravelChat(
   const decoder = new TextDecoder("utf-8");
   let buffer = "";
   let fullText = "";
+  let resolvedConversationId = conversationId;
 
-  const handleEvent = (event: ChatStreamEvent) => {
+  const handleEvent = (event: ChatStreamEvent): boolean => {
     if (event.type === "chunk" && typeof event.content === "string") {
       fullText += event.content;
       onChunk(event.content);
-      return;
+      return false;
     }
 
     if (event.type === "error") {
@@ -117,11 +240,24 @@ export async function streamTravelChat(
     }
 
     if (event.type === "done") {
-      if (typeof event.content === "string" && !fullText) {
-        fullText = event.content;
-        onChunk(event.content);
+      const payload = event.content;
+      if (payload && typeof payload === "object") {
+        const obj = payload as { conversationId?: unknown; content?: unknown };
+        if (typeof obj.conversationId === "string") {
+          resolvedConversationId = obj.conversationId;
+        }
+        if (typeof obj.content === "string" && !fullText) {
+          fullText = obj.content;
+          onChunk(obj.content);
+        }
+      } else if (typeof payload === "string" && !fullText) {
+        fullText = payload;
+        onChunk(payload);
       }
+      return true;
     }
+
+    return false;
   };
 
   while (true) {
@@ -145,13 +281,18 @@ export async function streamTravelChat(
           continue;
         }
 
-        handleEvent(event);
-        if (event.type === "done") {
-          return fullText;
+        if (handleEvent(event)) {
+          return {
+            content: fullText,
+            conversationId: resolvedConversationId,
+          };
         }
       }
     }
   }
 
-  return fullText;
+  return {
+    content: fullText,
+    conversationId: resolvedConversationId,
+  };
 }
