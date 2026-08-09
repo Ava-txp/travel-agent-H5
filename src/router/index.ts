@@ -19,9 +19,25 @@ const router = createRouter({
       component: () => import("@/views/Profile.vue"),
     },
     {
+      path: "/login",
+      name: "login",
+      component: () => import("@/views/Login.vue"),
+      meta: {
+        hideTabbar: true,
+      },
+    },
+    {
       path: "/detail",
       name: "detail",
       component: () => import("@/views/Detail.vue"),
+      meta: {
+        hideTabbar: true,
+      },
+    },
+    {
+      path: "/plans",
+      name: "plans",
+      component: () => import("@/views/PlanRecords.vue"),
       meta: {
         hideTabbar: true,
       },

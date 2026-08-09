@@ -145,16 +145,32 @@ const onStartPlan = () => {
         >
           开始规划
         </van-button>
+        <van-button
+          block
+          round
+          plain
+          type="primary"
+          class="home__records"
+          @click="router.push('/plans')"
+        >
+          规划记录
+        </van-button>
       </section>
 
       <!-- 快捷入口 -->
       <section class="home__card">
         <h2 class="home__card-title">快捷入口</h2>
-        <van-grid :column-num="2" :border="false" :gutter="12">
+        <van-grid :column-num="3" :border="false" :gutter="12">
           <van-grid-item @click="router.push('/chat')">
             <div class="home__shortcut">
               <van-icon name="chat-o" size="28" />
               <span>AI 对话</span>
+            </div>
+          </van-grid-item>
+          <van-grid-item @click="router.push('/plans')">
+            <div class="home__shortcut">
+              <van-icon name="orders-o" size="28" />
+              <span>规划记录</span>
             </div>
           </van-grid-item>
           <van-grid-item @click="router.push('/profile')">
@@ -241,6 +257,10 @@ const onStartPlan = () => {
 
 .home__submit {
   margin-top: 6px;
+}
+
+.home__records {
+  margin-top: 10px;
 }
 
 .home__shortcut {

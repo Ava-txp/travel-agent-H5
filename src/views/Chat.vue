@@ -10,6 +10,11 @@ import {
   type ConversationSummary,
 } from "@/api/travel";
 import { renderMarkdown } from "@/utils/markdown";
+import {
+  getUserLocation,
+  needsUserLocation,
+  type UserLocation,
+} from "@/utils/geolocation";
 // showToast / showConfirmDialog 由 unplugin-auto-import + VantResolver 自动引入
 
 interface ChatMessage {
@@ -44,6 +49,9 @@ const stickToBottom = ref(true);
 const historyVisible = ref(false);
 const historyLoading = ref(false);
 const conversations = ref<ConversationSummary[]>([]);
+/** 按需定位结果（仅位置相关提问时获取并展示） */
+const userLocation = ref<UserLocation | null>(null);
+const locating = ref(false);
 
 /** 长按上下文菜单 */
 const historyMenuVisible = ref(false);
@@ -275,10 +283,35 @@ const sendMessage = async (text?: string) => {
   };
 
   try {
+    // 业内常见：仅当用户提及位置/当地天气等意图时再申请定位，避免进页即弹权限
+    let location: UserLocation | null = null;
+    if (needsUserLocation(content)) {
+      locating.value = true;
+      try {
+        location = await getUserLocation({ withCity: true });
+        if (location) {
+          userLocation.value = location;
+        } else {
+          showToast("未能获取位置，可直接说明所在城市");
+        }
+      } finally {
+        locating.value = false;
+      }
+    }
+
     let fullContent = "";
     const result = await streamTravelChat({
       message: content,
       conversationId: conversationId.value ?? undefined,
+      location: location
+        ? {
+            lat: location.lat,
+            lon: location.lon,
+            accuracy: location.accuracy,
+            city: location.city,
+            displayName: location.displayName,
+          }
+        : undefined,
       onChunk: (chunk) => {
         fullContent += chunk;
         upsertAssistant(fullContent);
@@ -695,6 +728,20 @@ onUnmounted(() => {
     </div>
 
     <div class="chat__footer">
+      <div v-if="locating || userLocation?.city" class="chat__location">
+        <van-loading v-if="locating" size="12" />
+        <van-icon v-else name="location-o" size="14" />
+        <span
+          class="chat__location-text"
+          :title="userLocation?.displayName || undefined"
+        >
+          {{
+            locating
+              ? "正在获取位置..."
+              : `当前位置：${userLocation?.city ?? ""}`
+          }}
+        </span>
+      </div>
       <div class="chat__composer">
         <textarea
           ref="inputRef"
@@ -1111,6 +1158,24 @@ onUnmounted(() => {
   background: #fff;
   border-top: 1px solid #ebedf0;
   padding: 8px 12px;
+}
+
+.chat__location {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  margin-bottom: 6px;
+  padding: 0 2px;
+  color: #969799;
+  font-size: 12px;
+  line-height: 1.3;
+}
+
+.chat__location-text {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .chat__composer {

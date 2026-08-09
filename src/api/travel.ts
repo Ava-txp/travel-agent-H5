@@ -1,5 +1,6 @@
 import axiosRequest from "@/api/axiosRequest";
 import { getClientId } from "@/utils/clientId";
+import { getToken } from "@/utils/auth";
 
 export interface TravelRecommendParams {
   city: string;
@@ -33,6 +34,7 @@ export interface BudgetBreakdown {
 
 export interface TravelPlan {
   success: boolean;
+  id?: string;
   city?: string;
   days?: number;
   totalBudget?: number;
@@ -41,6 +43,20 @@ export interface TravelPlan {
   tips?: string[];
   warnings?: string[];
   message?: string;
+}
+
+export interface PlanSummary {
+  id: string;
+  city: string;
+  days: number;
+  totalBudget: number;
+  title: string;
+  createdAt: number;
+  updatedAt: number;
+}
+
+export interface PlanDetail extends PlanSummary {
+  plan: TravelPlan;
 }
 
 export interface TravelRecommendResponse {
@@ -98,9 +114,26 @@ export interface ChatStreamResult {
   conversationId?: string;
 }
 
+export interface ChatLocationPayload {
+  lat: number;
+  lon: number;
+  accuracy?: number;
+  city?: string;
+  displayName?: string;
+}
+
+export interface ReverseGeocodeResult {
+  lat: number;
+  lon: number;
+  city: string;
+  displayName: string;
+}
+
 export interface StreamTravelChatOptions {
   message: string;
   conversationId?: string;
+  /** 浏览器定位坐标，供「当前位置天气」等场景使用 */
+  location?: ChatLocationPayload;
   onChunk: (chunk: string) => void;
   signal?: AbortSignal;
 }
@@ -110,6 +143,58 @@ type ApiOk<T> = {
   data?: T;
   message?: string;
 };
+
+export async function fetchPlans(
+  signal?: AbortSignal,
+): Promise<PlanSummary[]> {
+  const { data } = await axiosRequest.get<ApiOk<PlanSummary[]>>(
+    "/travel/plans",
+    { signal },
+  );
+  return data.data ?? [];
+}
+
+export async function fetchPlanDetail(
+  id: string,
+  signal?: AbortSignal,
+): Promise<PlanDetail> {
+  const { data } = await axiosRequest.get<ApiOk<PlanDetail>>(
+    `/travel/plans/${id}`,
+    { signal },
+  );
+  if (!data.data) {
+    throw new Error(data.message || "规划记录不存在");
+  }
+  return data.data;
+}
+
+export async function deletePlan(
+  id: string,
+  signal?: AbortSignal,
+): Promise<void> {
+  await axiosRequest.delete<ApiOk<unknown>>(`/travel/plans/${id}`, {
+    signal,
+  });
+}
+
+/** 经纬度反查城市与地址 */
+export async function reverseGeocodeLocation(
+  lat: number,
+  lon: number,
+  signal?: AbortSignal,
+): Promise<ReverseGeocodeResult> {
+  const { data } = await axiosRequest.get<ApiOk<ReverseGeocodeResult>>(
+    "/travel/location/reverse",
+    {
+      params: { lat, lon },
+      signal,
+    },
+  );
+  if (!data.data) {
+    throw new Error(data.message || "逆地理编码失败");
+  }
+  return data.data;
+}
 
 export async function fetchConversations(
   signal?: AbortSignal,
@@ -191,18 +276,35 @@ export async function updateConversation(
 export async function streamTravelChat(
   options: StreamTravelChatOptions,
 ): Promise<ChatStreamResult> {
-  const { message, conversationId, onChunk, signal } = options;
+  const { message, conversationId, location, onChunk, signal } = options;
 
+  const token = getToken();
   const response = await fetch("/api/travel/chat", {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
       Accept: "text/event-stream",
       "X-Client-Id": getClientId(),
+      ...(token ? { Authorization: `Bearer ${token}` } : {}),
     },
     body: JSON.stringify({
       message,
       ...(conversationId ? { conversationId } : {}),
+      ...(location
+        ? {
+            location: {
+              lat: location.lat,
+              lon: location.lon,
+              ...(typeof location.accuracy === "number"
+                ? { accuracy: location.accuracy }
+                : {}),
+              ...(location.city ? { city: location.city } : {}),
+              ...(location.displayName
+                ? { displayName: location.displayName }
+                : {}),
+            },
+          }
+        : {}),
     }),
     signal,
   });

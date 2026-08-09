@@ -2,6 +2,7 @@
 import { computed, onMounted, onUnmounted, ref } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import {
+  fetchPlanDetail,
   fetchTravelRecommend,
   type DailyItinerary,
   type TravelPeriod,
@@ -28,9 +29,11 @@ const budgetLabels: Record<string, string> = {
 const route = useRoute(); // 当前路由
 const router = useRouter(); // 总路由
 
+const planId = computed(() => String(route.query.id || ""));
 const city = computed(() => String(route.query.city || ""));
 const budget = computed(() => Number(route.query.budget || 0));
 const days = computed(() => Number(route.query.days || 0));
+const isHistoryView = computed(() => Boolean(planId.value));
 
 const loading = ref(true);
 const errorMessage = ref("");
@@ -45,9 +48,10 @@ const abortPendingRequest = () => {
   abortController = null;
 };
 
-const pageTitle = computed(() =>
-  city.value ? `${city.value}行程规划` : "行程规划",
-);
+const pageTitle = computed(() => {
+  const displayCity = planData.value?.city || city.value;
+  return displayCity ? `${displayCity}行程规划` : "行程规划";
+});
 
 const summaryText = computed(() => {
   const plan = planData.value;
@@ -102,7 +106,8 @@ const goBack = () => {
 };
 
 const loadPlan = async () => {
-  if (!city.value || !budget.value || !days.value) {
+  // 历史记录：按 id 读取已落库规划；新建：带 city/budget/days 重新生成
+  if (!planId.value && (!city.value || !budget.value || !days.value)) {
     loading.value = false;
     errorMessage.value = "缺少必要参数，请返回重新填写";
     return;
@@ -120,21 +125,36 @@ const loadPlan = async () => {
   expandedKeys.value = [];
 
   try {
-    const result = await fetchTravelRecommend(
-      {
-        city: city.value,
-        budget: budget.value,
-        days: days.value,
-      },
-      signal,
-    );
+    if (planId.value) {
+      const detail = await fetchPlanDetail(planId.value, signal);
+      const data = detail.plan;
+      if (!data || data.success === false) {
+        throw new Error(data?.message || "规划记录无效");
+      }
+      planData.value = {
+        ...data,
+        id: detail.id,
+        city: data.city || detail.city,
+        days: data.days ?? detail.days,
+        totalBudget: data.totalBudget ?? detail.totalBudget,
+      };
+    } else {
+      const result = await fetchTravelRecommend(
+        {
+          city: city.value,
+          budget: budget.value,
+          days: days.value,
+        },
+        signal,
+      );
 
-    const data = result.data;
-    if (!data || data.success === false) {
-      throw new Error(data?.message || "生成旅游规划失败");
+      const data = result.data;
+      if (!data || data.success === false) {
+        throw new Error(data?.message || "生成旅游规划失败");
+      }
+
+      planData.value = data;
     }
-
-    planData.value = data;
   } catch (error) {
     // 返回/卸载导致的取消，不提示错误（兼容 fetch AbortError / axios CanceledError）
     const err = error as { name?: string; code?: string };
@@ -148,7 +168,11 @@ const loadPlan = async () => {
     }
 
     errorMessage.value =
-      error instanceof Error ? error.message : "生成旅游规划失败";
+      error instanceof Error
+        ? error.message
+        : isHistoryView.value
+          ? "加载规划记录失败"
+          : "生成旅游规划失败";
     showToast(errorMessage.value);
   } finally {
     if (!signal.aborted) {
@@ -183,7 +207,9 @@ onUnmounted(() => {
     <div class="detail__body">
       <!-- 调用大模型的loading状态 -->
       <div v-if="loading" class="detail__loading">
-        <van-loading size="24px">正在生成旅游规划...</van-loading>
+        <van-loading size="24px">
+          {{ isHistoryView ? "正在加载规划记录..." : "正在生成旅游规划..." }}
+        </van-loading>
       </div>
 
       <!-- 调用大模型的错误状态 -->
@@ -193,7 +219,9 @@ onUnmounted(() => {
           #description: 插槽简写，v-slot:description => 把内容放到子组件名为 description 的插槽里
         -->
         <template #description>
-          <p class="detail__error">生成旅游规划失败</p>
+          <p class="detail__error">
+            {{ isHistoryView ? "加载规划记录失败" : "生成旅游规划失败" }}
+          </p>
         </template>
         <van-button
           round

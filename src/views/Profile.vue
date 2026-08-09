@@ -1,17 +1,76 @@
 <script setup lang="ts">
+import { onMounted, ref } from "vue";
 import { useRouter } from "vue-router";
-// showToast 由 unplugin-auto-import + VantResolver 自动引入（含样式）
+import { fetchMe, logout } from "@/api/auth";
+import {
+  clearAuthSession,
+  getStoredUser,
+  getToken,
+  setAuthSession,
+  type AuthUser,
+} from "@/utils/auth";
+// showToast / showConfirmDialog 由 unplugin-auto-import + VantResolver 自动引入
 
 const router = useRouter();
 
 const avatarUrl = "https://fastly.jsdelivr.net/npm/@vant/assets/cat.jpeg";
 const appVersion = "v1.0.0";
+const user = ref<AuthUser | null>(getStoredUser());
+const loadingUser = ref(false);
 
-// 返回按钮
 const goBack = () => router.back();
 
-// 站位
 const onMenuClick = (label: string) => showToast(`${label}功能开发中`);
+
+const goLogin = () => {
+  void router.push({ path: "/login", query: { redirect: "/profile" } });
+};
+
+const goChatHistory = () => {
+  void router.push("/chat");
+};
+
+const goPlanRecords = () => {
+  void router.push("/plans");
+};
+
+const refreshUser = async () => {
+  if (!getToken()) {
+    user.value = null;
+    return;
+  }
+  loadingUser.value = true;
+  try {
+    const me = await fetchMe();
+    user.value = me;
+    const token = getToken();
+    if (token) setAuthSession(token, me);
+  } catch {
+    clearAuthSession();
+    user.value = null;
+  } finally {
+    loadingUser.value = false;
+  }
+};
+
+const onLogout = async () => {
+  try {
+    await showConfirmDialog({
+      title: "退出登录",
+      message: "确定退出当前账号吗？",
+    });
+  } catch {
+    return;
+  }
+
+  await logout();
+  user.value = null;
+  showToast("已退出登录");
+};
+
+onMounted(() => {
+  void refreshUser();
+});
 </script>
 
 <template>
@@ -24,8 +83,7 @@ const onMenuClick = (label: string) => showToast(`${label}功能开发中`);
       @click-left="goBack"
     />
 
-    <!-- 用户信息展示 -->
-    <section class="profile__header">
+    <section class="profile__header" @click="user ? undefined : goLogin()">
       <van-image
         class="profile__avatar"
         round
@@ -35,8 +93,18 @@ const onMenuClick = (label: string) => showToast(`${label}功能开发中`);
         :src="avatarUrl"
       />
       <div class="profile__user">
-        <h1 class="profile__name">游客A</h1>
-        <p class="profile__desc">欢迎使用智能旅游助手</p>
+        <h1 class="profile__name">
+          {{ user ? user.nickname : "点击登录" }}
+        </h1>
+        <p class="profile__desc">
+          {{
+            user
+              ? user.account
+              : loadingUser
+                ? "加载中..."
+                : "登录后同步跨设备历史对话"
+          }}
+        </p>
       </div>
     </section>
 
@@ -50,7 +118,18 @@ const onMenuClick = (label: string) => showToast(`${label}功能开发中`);
             icon="star-o"
             @click="onMenuClick('我的收藏')"
           />
-          <van-cell title="历史记录" is-link @click="onMenuClick('历史记录')" />
+          <van-cell
+            title="规划记录"
+            is-link
+            icon="notes-o"
+            @click="goPlanRecords"
+          />
+          <van-cell
+            title="历史对话"
+            is-link
+            icon="orders-o"
+            @click="goChatHistory"
+          />
           <van-cell title="设置" is-link @click="onMenuClick('设置')" />
         </van-cell-group>
       </section>
@@ -62,6 +141,12 @@ const onMenuClick = (label: string) => showToast(`${label}功能开发中`);
           <van-cell title="版本信息" :value="appVersion" />
         </van-cell-group>
       </section>
+
+      <div v-if="user" class="profile__logout">
+        <van-button block round type="danger" plain @click="onLogout">
+          退出登录
+        </van-button>
+      </div>
     </div>
   </div>
 </template>
@@ -80,6 +165,7 @@ const onMenuClick = (label: string) => showToast(`${label}功能开发中`);
   gap: 16px;
   padding: 24px 20px;
   background: linear-gradient(90deg, #3b82f6 0%, #22d3ee 100%);
+  cursor: pointer;
 }
 
 .profile__avatar {
@@ -105,6 +191,9 @@ const onMenuClick = (label: string) => showToast(`${label}功能开发中`);
   font-size: 13px;
   line-height: 1.4;
   color: rgba(255, 255, 255, 0.92);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .profile__body {
@@ -127,6 +216,10 @@ const onMenuClick = (label: string) => showToast(`${label}功能开发中`);
   font-weight: 500;
   line-height: 1.4;
   color: #969799;
+}
+
+.profile__logout {
+  padding: 24px 16px;
 }
 
 .profile :deep(.van-cell) {

@@ -4,6 +4,7 @@ import axios, {
   type InternalAxiosRequestConfig,
 } from "axios";
 import { getClientId } from "@/utils/clientId";
+import { clearAuthSession, getToken } from "@/utils/auth";
 
 const axiosRequest: AxiosInstance = axios.create({
   baseURL: "/api",
@@ -16,6 +17,10 @@ const axiosRequest: AxiosInstance = axios.create({
 axiosRequest.interceptors.request.use(
   (config: InternalAxiosRequestConfig) => {
     config.headers.set("X-Client-Id", getClientId());
+    const token = getToken();
+    if (token) {
+      config.headers.set("Authorization", `Bearer ${token}`);
+    }
     return config;
   },
   (error) => Promise.reject(error),
@@ -27,7 +32,6 @@ axiosRequest.interceptors.response.use(
 
     console.log("response", response);
 
-    // 业务层约定：status !== 'ok' 视为失败
     if (
       response.status !== 200 ||
       (payload?.status && payload.status !== "ok")
@@ -40,6 +44,10 @@ axiosRequest.interceptors.response.use(
   (error) => {
     if (axios.isCancel(error) || error?.code === "ERR_CANCELED") {
       return Promise.reject(error);
+    }
+
+    if (error?.response?.status === 401) {
+      clearAuthSession();
     }
 
     const message =
