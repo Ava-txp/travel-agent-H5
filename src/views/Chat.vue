@@ -19,7 +19,6 @@ const sendBridge = {
 };
 
 const {
-  listRef,
   stickToBottom,
   onListScroll,
   scrollToBottom,
