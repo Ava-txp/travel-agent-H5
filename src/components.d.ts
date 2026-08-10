@@ -11,6 +11,10 @@ export {}
 /* prettier-ignore */
 declare module 'vue' {
   export interface GlobalComponents {
+    ChatComposer: typeof import('./components/chat/ChatComposer.vue')['default']
+    ChatContextMenu: typeof import('./components/chat/ChatContextMenu.vue')['default']
+    ChatHistoryDrawer: typeof import('./components/chat/ChatHistoryDrawer.vue')['default']
+    ChatMessageList: typeof import('./components/chat/ChatMessageList.vue')['default']
     HelloWorld: typeof import('./components/HelloWorld.vue')['default']
     RouterLink: typeof import('vue-router')['RouterLink']
     RouterView: typeof import('vue-router')['RouterView']
