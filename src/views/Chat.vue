@@ -50,6 +50,11 @@ const {
   thinking,
   userLocation,
   locating,
+  pendingAttachments,
+  addImageFiles,
+  removePendingAttachment,
+  clearSendDraft,
+  applySceneShortcut,
   sendMessage,
   stopGeneration,
   abortPendingRequest,
@@ -73,6 +78,7 @@ sendBridge.clearSendState = () => {
 
 const resetToEmptyChat = () => {
   sendBridge.clearSendState();
+  clearSendDraft();
   resetConversation();
 };
 
@@ -153,6 +159,7 @@ onUnmounted(() => {
         :thinking="thinking"
         :sending="sending"
         @faq-click="onFaqClick"
+        @scene-click="applySceneShortcut"
       />
     </div>
 
@@ -162,8 +169,11 @@ onUnmounted(() => {
       :loading-history="loadingHistory"
       :locating="locating"
       :user-location="userLocation"
+      :pending-attachments="pendingAttachments"
       @send="sendMessage()"
       @stop="stopGeneration"
+      @pick-files="addImageFiles"
+      @remove-attachment="removePendingAttachment"
     />
 
     <ChatHistoryDrawer

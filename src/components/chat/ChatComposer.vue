@@ -1,6 +1,7 @@
 <script setup lang="ts">
-import { nextTick, ref, watch } from "vue";
+import { computed, nextTick, ref, watch } from "vue";
 import type { UserLocation } from "@/utils/geolocation";
+import type { PendingAttachment } from "@/composables/chat/types";
 
 const props = defineProps<{
   modelValue: string;
@@ -8,15 +9,31 @@ const props = defineProps<{
   loadingHistory: boolean;
   locating: boolean;
   userLocation: UserLocation | null;
+  pendingAttachments: PendingAttachment[];
 }>();
 
 const emit = defineEmits<{
   "update:modelValue": [value: string];
   send: [];
   stop: [];
+  pickFiles: [files: FileList];
+  removeAttachment: [localId: string];
 }>();
 
 const inputRef = ref<HTMLTextAreaElement | null>(null);
+const fileInputRef = ref<HTMLInputElement | null>(null);
+
+const disabled = computed(
+  () => props.sending || props.loadingHistory,
+);
+
+const uploading = computed(() =>
+  props.pendingAttachments.some((a) => a.status === "uploading"),
+);
+
+const canSend = computed(
+  () => !props.loadingHistory && !uploading.value,
+);
 
 /** 按内容自动增高输入框，最高约 3.5 行后内部滚动 */
 const resizeInput = () => {
@@ -39,6 +56,19 @@ const onInput = (event: Event) => {
   emit("update:modelValue", target.value);
   resizeInput();
 };
+
+const openPicker = () => {
+  if (disabled.value) return;
+  fileInputRef.value?.click();
+};
+
+const onFileChange = (event: Event) => {
+  const input = event.target as HTMLInputElement;
+  if (input.files && input.files.length > 0) {
+    emit("pickFiles", input.files);
+  }
+  input.value = "";
+};
 </script>
 
 <template>
@@ -57,22 +87,73 @@ const onInput = (event: Event) => {
         }}
       </span>
     </div>
+
+    <div
+      v-if="pendingAttachments.length > 0"
+      class="chat__attachments"
+    >
+      <div
+        v-for="item in pendingAttachments"
+        :key="item.localId"
+        class="chat__attach"
+        :class="{
+          'chat__attach--error': item.status === 'error',
+          'chat__attach--uploading': item.status === 'uploading',
+        }"
+      >
+        <img
+          class="chat__attach-img"
+          :src="item.previewUrl"
+          alt="待发送图片"
+        />
+        <div v-if="item.status === 'uploading'" class="chat__attach-mask">
+          <van-loading size="16" color="#fff" />
+        </div>
+        <button
+          type="button"
+          class="chat__attach-remove"
+          :disabled="sending"
+          aria-label="移除图片"
+          @click="emit('removeAttachment', item.localId)"
+        >
+          <van-icon name="cross" size="10" />
+        </button>
+      </div>
+    </div>
+
     <div class="chat__composer">
+      <button
+        type="button"
+        class="chat__attach-btn"
+        :disabled="disabled"
+        aria-label="添加图片"
+        @click="openPicker"
+      >
+        <van-icon name="photograph" size="22" />
+      </button>
+      <input
+        ref="fileInputRef"
+        class="chat__file-input"
+        type="file"
+        accept="image/jpeg,image/png,image/webp"
+        multiple
+        @change="onFileChange"
+      />
       <textarea
         ref="inputRef"
         class="chat__input"
         rows="1"
-        placeholder="输入您的问题..."
+        placeholder="输入问题，或添加图片..."
         :value="modelValue"
-        :disabled="sending || loadingHistory"
+        :disabled="disabled"
         @input="onInput"
-        @keydown.enter.exact.prevent="emit('send')"
+        @keydown.enter.exact.prevent="canSend && !sending ? emit('send') : undefined"
       />
       <van-button
         :type="sending ? 'danger' : 'primary'"
         size="small"
         class="chat__send"
-        :disabled="loadingHistory"
+        :disabled="sending ? false : !canSend"
         @click="sending ? emit('stop') : emit('send')"
       >
         {{ sending ? "停止" : "发送" }}
@@ -109,15 +190,99 @@ const onInput = (event: Event) => {
   white-space: nowrap;
 }
 
+.chat__attachments {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 8px;
+  padding: 0 2px;
+}
+
+.chat__attach {
+  position: relative;
+  width: 64px;
+  height: 64px;
+  border-radius: 8px;
+  overflow: hidden;
+  background: #f2f3f5;
+}
+
+.chat__attach-img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+
+.chat__attach-mask {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(0, 0, 0, 0.35);
+}
+
+.chat__attach--error {
+  outline: 1px solid #ee0a24;
+}
+
+.chat__attach-remove {
+  position: absolute;
+  top: 2px;
+  right: 2px;
+  width: 18px;
+  height: 18px;
+  border: none;
+  border-radius: 50%;
+  background: rgba(0, 0, 0, 0.55);
+  color: #fff;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  cursor: pointer;
+}
+
+.chat__attach-remove:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
 .chat__composer {
   display: flex;
   align-items: flex-end;
-  gap: 8px;
+  gap: 6px;
   min-height: 40px;
-  padding: 4px 4px 4px 12px;
+  padding: 4px 4px 4px 8px;
   border: 1px solid #ebedf0;
   border-radius: 22px;
   background: #fff;
+}
+
+.chat__attach-btn {
+  flex-shrink: 0;
+  width: 32px;
+  height: 32px;
+  margin-bottom: 2px;
+  border: none;
+  border-radius: 50%;
+  background: transparent;
+  color: #646566;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  cursor: pointer;
+}
+
+.chat__attach-btn:disabled {
+  color: #c8c9cc;
+  cursor: not-allowed;
+}
+
+.chat__file-input {
+  display: none;
 }
 
 .chat__input {

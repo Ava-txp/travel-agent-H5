@@ -80,6 +80,18 @@ export async function fetchTravelRecommend(
 
 export type ChatRole = "user" | "assistant";
 
+/** 多模态场景软提示：后端分类为主，前端 hint 仅加权 */
+export type ChatSceneHint = "spot_sign" | "ticket_itinerary" | "food_menu";
+
+export interface ChatAttachment {
+  id: string;
+  type: "image";
+  url: string;
+  mime: string;
+  width?: number;
+  height?: number;
+}
+
 export interface ConversationSummary {
   id: string;
   title: string;
@@ -93,6 +105,8 @@ export interface ConversationMessage {
   role: ChatRole;
   content: string;
   createdAt: number;
+  attachments?: ChatAttachment[];
+  sceneHint?: ChatSceneHint;
 }
 
 export interface ConversationDetail {
@@ -129,9 +143,21 @@ export interface ReverseGeocodeResult {
   displayName: string;
 }
 
+export interface UploadTravelImageResult {
+  id: string;
+  url: string;
+  mime: string;
+  width?: number;
+  height?: number;
+}
+
 export interface StreamTravelChatOptions {
   message: string;
   conversationId?: string;
+  /** 已上传的图片附件 id 列表 */
+  attachments?: Array<{ id: string; type: "image" }>;
+  /** 场景软提示，后端可纠正 */
+  sceneHint?: ChatSceneHint;
   /** 浏览器定位坐标，供「当前位置天气」等场景使用 */
   location?: ChatLocationPayload;
   onChunk: (chunk: string) => void;
@@ -270,13 +296,49 @@ export async function updateConversation(
 }
 
 /**
+ * 上传聊天图片：multipart POST /travel/uploads/image
+ * 返回 attachment id / url，供后续 chat 引用。
+ */
+export async function uploadTravelImage(
+  file: File,
+  signal?: AbortSignal,
+): Promise<ChatAttachment> {
+  const form = new FormData();
+  form.append("file", file);
+
+  const { data } = await axiosRequest.post<ApiOk<UploadTravelImageResult>>(
+    "/travel/uploads/image",
+    form,
+    {
+      signal,
+      // 交由浏览器/axios 自动带 boundary，避免沿用实例默认 application/json
+      headers: { "Content-Type": undefined },
+    },
+  );
+
+  if (!data.data?.id || !data.data.url) {
+    throw new Error(data.message || "图片上传失败");
+  }
+
+  return {
+    id: data.data.id,
+    type: "image",
+    url: data.data.url,
+    mime: data.data.mime || file.type || "image/jpeg",
+    width: data.data.width,
+    height: data.data.height,
+  };
+}
+
+/**
  * 流式对话：POST /travel/chat，按 SSE 逐段回调 content。
  * 传入 conversationId 续聊；省略则后端新建会话，并在 done 中回传 id。
  */
 export async function streamTravelChat(
   options: StreamTravelChatOptions,
 ): Promise<ChatStreamResult> {
-  const { message, conversationId, location, onChunk, signal } = options;
+  const { message, conversationId, attachments, sceneHint, location, onChunk, signal } =
+    options;
 
   const token = getToken();
   const response = await fetch("/api/travel/chat", {
@@ -290,6 +352,8 @@ export async function streamTravelChat(
     body: JSON.stringify({
       message,
       ...(conversationId ? { conversationId } : {}),
+      ...(attachments && attachments.length > 0 ? { attachments } : {}),
+      ...(sceneHint ? { sceneHint } : {}),
       ...(location
         ? {
             location: {

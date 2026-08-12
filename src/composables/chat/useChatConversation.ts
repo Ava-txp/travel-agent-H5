@@ -81,6 +81,10 @@ export function useChatConversation(options: {
         id: item.id,
         role: item.role,
         content: item.content,
+        attachments: item.attachments?.length
+          ? item.attachments
+          : undefined,
+        sceneHint: item.sceneHint,
         html:
           item.role === "assistant" ? renderMarkdown(item.content) : undefined,
         time: formatTime(new Date(item.createdAt)),

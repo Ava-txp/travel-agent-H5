@@ -1,6 +1,11 @@
 <script setup lang="ts">
 import { renderMarkdown } from "@/utils/markdown";
-import { CHAT_FAQS, type ChatMessage } from "@/composables/chat/types";
+import {
+  CHAT_FAQS,
+  CHAT_SCENE_SHORTCUTS,
+  type ChatMessage,
+  type ChatSceneShortcut,
+} from "@/composables/chat/types";
 
 defineProps<{
   messages: ChatMessage[];
@@ -11,6 +16,7 @@ defineProps<{
 
 const emit = defineEmits<{
   faqClick: [question: string];
+  sceneClick: [shortcut: ChatSceneShortcut];
 }>();
 </script>
 
@@ -22,6 +28,22 @@ const emit = defineEmits<{
 
   <div v-else-if="messages.length === 0" class="chat__empty">
     <van-empty description="开始和 AI 助手对话吧！" />
+
+    <div class="chat__faq">
+      <p class="chat__faq-title">拍照问问</p>
+      <div class="chat__faq-list">
+        <button
+          v-for="item in CHAT_SCENE_SHORTCUTS"
+          :key="item.scene"
+          type="button"
+          class="chat__faq-item chat__faq-item--scene"
+          :disabled="sending"
+          @click="emit('sceneClick', item)"
+        >
+          {{ item.label }}
+        </button>
+      </div>
+    </div>
 
     <div class="chat__faq">
       <p class="chat__faq-title">常见问题</p>
@@ -52,7 +74,25 @@ const emit = defineEmits<{
         class="chat__bubble chat__bubble--md"
         v-html="message.html || renderMarkdown(message.content)"
       ></div>
-      <div v-else class="chat__bubble">{{ message.content }}</div>
+      <div v-else class="chat__bubble">
+        <div
+          v-if="message.attachments?.length"
+          class="chat__msg-images"
+          :class="{ 'chat__msg-images--only': !message.content }"
+        >
+          <img
+            v-for="att in message.attachments"
+            :key="att.id"
+            class="chat__msg-image"
+            :src="att.url"
+            alt="用户上传图片"
+            loading="lazy"
+          />
+        </div>
+        <div v-if="message.content" class="chat__msg-text">
+          {{ message.content }}
+        </div>
+      </div>
       <div class="chat__time">{{ message.time }}</div>
     </div>
 
@@ -88,6 +128,10 @@ const emit = defineEmits<{
   text-align: center;
 }
 
+.chat__faq + .chat__faq {
+  margin-top: 20px;
+}
+
 .chat__faq-title {
   margin: 0 0 14px;
   font-size: 13px;
@@ -111,6 +155,10 @@ const emit = defineEmits<{
   font-size: 13px;
   line-height: 1.4;
   cursor: pointer;
+}
+
+.chat__faq-item--scene {
+  background: #1989fa;
 }
 
 .chat__faq-item:disabled {
@@ -163,6 +211,31 @@ const emit = defineEmits<{
   background: #fff;
   color: #323233;
   border-bottom-left-radius: 4px;
+}
+
+.chat__msg-images {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: 8px;
+}
+
+.chat__msg-images--only {
+  margin-bottom: 0;
+}
+
+.chat__msg-image {
+  width: 120px;
+  max-width: 100%;
+  height: 90px;
+  object-fit: cover;
+  border-radius: 8px;
+  display: block;
+  background: rgba(255, 255, 255, 0.2);
+}
+
+.chat__msg-text {
+  white-space: pre-wrap;
 }
 
 /* 助手 Markdown 排版 */
