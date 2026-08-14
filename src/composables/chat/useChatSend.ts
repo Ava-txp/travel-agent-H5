@@ -59,16 +59,61 @@ export function useChatSend(options: {
 
   let abortController: AbortController | null = null;
   let uploadSeq = 0;
+  /** 递增后使进行中的 rAF commit 失效（切会话 / 新发送） */
+  let sendSeq = 0;
+  let chunkRafId: number | null = null;
+  let pendingAssistantText: string | null = null;
+  let commitAssistant: ((text: string) => void) | null = null;
 
-  const abortPendingRequest = () => {
+  const cancelChunkRaf = () => {
+    if (chunkRafId !== null) {
+      window.cancelAnimationFrame(chunkRafId);
+      chunkRafId = null;
+    }
+  };
+
+  const flushPendingAssistant = () => {
+    cancelChunkRaf();
+    if (pendingAssistantText === null || !commitAssistant) return;
+    const text = pendingAssistantText;
+    pendingAssistantText = null;
+    commitAssistant(text);
+  };
+
+  /** 流式 chunk 密集时合并为一帧最多渲染一次 Markdown / DOM */
+  const scheduleAssistantUpdate = (text: string) => {
+    if (!commitAssistant) return;
+    pendingAssistantText = text;
+    if (chunkRafId !== null) return;
+    chunkRafId = window.requestAnimationFrame(() => {
+      chunkRafId = null;
+      if (pendingAssistantText === null || !commitAssistant) {
+        pendingAssistantText = null;
+        return;
+      }
+      const text = pendingAssistantText;
+      pendingAssistantText = null;
+      commitAssistant(text);
+    });
+  };
+
+  const abortStream = () => {
     abortController?.abort();
     abortController = null;
+    cancelChunkRaf();
+  };
+
+  const abortPendingRequest = () => {
+    abortStream();
+    sendSeq += 1;
+    pendingAssistantText = null;
+    commitAssistant = null;
   };
 
   /** 中断生成：保留已展示内容，仅停止后续流式输出 */
   const stopGeneration = () => {
     if (!sending.value) return;
-    abortPendingRequest();
+    abortStream();
   };
 
   const clearPendingAttachments = () => {
@@ -218,7 +263,9 @@ export function useChatSend(options: {
     await scrollToBottom({ force: true });
 
     abortPendingRequest();
-    abortController = new AbortController();
+    const controller = new AbortController();
+    abortController = controller;
+    const thisSend = sendSeq;
 
     let assistantId: string | null = null;
 
@@ -233,7 +280,6 @@ export function useChatSend(options: {
           html: renderMarkdown(text),
           time: formatTime(),
         });
-        scheduleScrollToBottom();
         return;
       }
 
@@ -242,6 +288,15 @@ export function useChatSend(options: {
       target.content = text;
       target.html = renderMarkdown(text);
     };
+
+    commitAssistant = (text: string) => {
+      if (thisSend !== sendSeq) return;
+      upsertAssistant(text);
+      scheduleScrollToBottom();
+    };
+
+    let aborted = false;
+    let failMessage: string | null = null;
 
     try {
       let location: UserLocation | null = null;
@@ -263,6 +318,11 @@ export function useChatSend(options: {
         }
       }
 
+      if (thisSend !== sendSeq || controller.signal.aborted) {
+        aborted = true;
+        return;
+      }
+
       let fullContent = "";
       const result = await streamTravelChat({
         message: content,
@@ -282,38 +342,43 @@ export function useChatSend(options: {
             }
           : undefined,
         onChunk: (chunk) => {
+          if (thisSend !== sendSeq) return;
           fullContent += chunk;
-          upsertAssistant(fullContent);
-          scheduleScrollToBottom();
+          if (thinking.value) thinking.value = false;
+          scheduleAssistantUpdate(fullContent);
         },
-        signal: abortController.signal,
+        signal: controller.signal,
       });
 
       if (result.conversationId) {
         bindConversationId(result.conversationId);
       }
-
-      if (assistantId === null) {
-        upsertAssistant("暂时没有生成内容，请稍后再试。");
-        await scrollToBottom();
-      }
     } catch (error) {
-      // 用户主动停止：保留已渲染内容，不弹错误
-      if ((error as Error)?.name === "AbortError") return;
-
-      thinking.value = false;
-      const message =
-        error instanceof Error ? error.message : "对话失败，请稍后重试";
-      showToast(message);
-
-      if (assistantId === null) {
-        upsertAssistant(`抱歉，${message}`);
-        await scrollToBottom();
+      // 用户主动停止：保留已展示内容，不弹错误；pending 交给 finally 刷出
+      if ((error as Error)?.name === "AbortError") {
+        aborted = true;
+        return;
       }
+
+      failMessage =
+        error instanceof Error ? error.message : "对话失败，请稍后重试";
+      showToast(failMessage);
     } finally {
-      sending.value = false;
-      thinking.value = false;
-      abortController = null;
+      if (thisSend === sendSeq) {
+        flushPendingAssistant();
+        if (assistantId === null && !aborted) {
+          upsertAssistant(
+            failMessage
+              ? `抱歉，${failMessage}`
+              : "暂时没有生成内容，请稍后再试。",
+          );
+          void scrollToBottom();
+        }
+        sending.value = false;
+        thinking.value = false;
+        abortController = null;
+        commitAssistant = null;
+      }
     }
   };
 

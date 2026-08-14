@@ -3,6 +3,7 @@ import axios, {
   type AxiosResponse,
   type InternalAxiosRequestConfig,
 } from "axios";
+import { ApiError } from "@/api/errors";
 import { getClientId } from "@/utils/clientId";
 import { clearAuthSession, getToken } from "@/utils/auth";
 
@@ -26,6 +27,17 @@ axiosRequest.interceptors.request.use(
   (error) => Promise.reject(error),
 );
 
+const readRetryAfter = (headers: unknown): number | undefined => {
+  if (!headers || typeof headers !== "object") return undefined;
+  const rec = headers as Record<string, unknown> & {
+    get?: (name: string) => unknown;
+  };
+  const raw =
+    rec["retry-after"] ?? rec["Retry-After"] ?? rec.get?.("retry-after");
+  const n = Number(raw);
+  return Number.isFinite(n) && n > 0 ? Math.ceil(n) : undefined;
+};
+
 axiosRequest.interceptors.response.use(
   (response: AxiosResponse) => {
     const payload = response.data as { status?: string; message?: string };
@@ -36,7 +48,9 @@ axiosRequest.interceptors.response.use(
       response.status !== 200 ||
       (payload?.status && payload.status !== "ok")
     ) {
-      return Promise.reject(new Error(payload.message || "请求失败"));
+      return Promise.reject(
+        new ApiError(payload.message || "请求失败", "server", response.status),
+      );
     }
 
     return response;
@@ -46,16 +60,35 @@ axiosRequest.interceptors.response.use(
       return Promise.reject(error);
     }
 
-    if (error?.response?.status === 401) {
+    if (error?.code === "ECONNABORTED" || /timeout/i.test(error?.message || "")) {
+      return Promise.reject(
+        new ApiError("请求超时，请稍后重试", "timeout"),
+      );
+    }
+
+    if (!error?.response) {
+      return Promise.reject(
+        new ApiError("网络异常，请检查连接后重试", "network"),
+      );
+    }
+
+    const status = error.response.status as number;
+    if (status === 401) {
       clearAuthSession();
     }
 
     const message =
-      error?.response?.data?.message ||
-      error?.message ||
+      error.response.data?.message ||
+      error.message ||
       "网络异常，请稍后重试";
 
-    return Promise.reject(new Error(message));
+    return Promise.reject(
+      ApiError.fromStatus(
+        status,
+        message,
+        readRetryAfter(error.response.headers),
+      ),
+    );
   },
 );
 
