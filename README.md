@@ -29,9 +29,9 @@ npm run preview  # 预览构建产物
 入口 (index.html → main.ts)
   └─ 应用壳 (App.vue：router-view + van-tabbar)
        └─ 页面 Views
-            ├─ Chat 组件 (components/chat/*)
-            ├─ Chat Composables (业务编排)
-            └─ API 模块 (auth.ts / travel.ts)
+            ├─ Chat / Plan 组件
+            ├─ Chat / Plan Composables（业务编排）
+            └─ API 模块 (auth.ts / travel/*)
                  ├─ HTTP 客户端 (axiosRequest + fetch SSE)
                  │    └─ 后端 /api → :5000
                  └─ 工具层 (auth / clientId / markdown / geo / compress)
@@ -43,8 +43,8 @@ npm run preview  # 预览构建产物
 flowchart TB
   entry[入口 main.ts] --> shell[App.vue 壳]
   shell --> views[Views 页面]
-  views --> chatUI[Chat 组件]
-  views --> composables[Chat Composables]
+  views --> chatUI[Chat / Plan 组件]
+  views --> composables[Chat / Plan Composables]
   views --> api[API 模块]
   chatUI --> composables
   composables --> api
@@ -63,29 +63,28 @@ src/
 ├── App.vue                 # 路由出口 + 底部 TabBar
 ├── router/index.ts         # 路由定义
 ├── views/                  # 页面
-│   ├── Home.vue            # 推荐入口
+│   ├── Home.vue            # 推荐入口（表单 → /detail）
 │   ├── Chat.vue            # 流式对话（核心）
 │   ├── Profile.vue         # 我的
 │   ├── Login.vue           # 登录注册
-│   ├── Detail.vue          # 行程详情
+│   ├── Detail.vue          # 行程详情 / 流式生成
 │   └── PlanRecords.vue     # 行程记录列表
-├── components/chat/        # 对话 UI
-│   ├── ChatComposer.vue
-│   ├── ChatMessageList.vue
-│   ├── ChatHistoryDrawer.vue
-│   └── ChatContextMenu.vue
-├── composables/chat/       # 对话业务编排
-│   ├── useChatConversation.ts
-│   ├── useChatSend.ts
-│   ├── useChatHistory.ts
-│   ├── useChatScroll.ts
-│   ├── scenes.ts
-│   ├── types.ts
-│   └── utils.ts
+├── components/
+│   ├── chat/               # 对话 UI
+│   └── plan/               # 规划加载 / 结果 / 错误态
+├── composables/
+│   ├── chat/               # 对话业务编排
+│   └── plan/               # 规划 SSE 合并、超时、错误分类
 ├── api/
 │   ├── axiosRequest.ts     # Axios 实例与拦截器
 │   ├── auth.ts             # 鉴权 API
-│   └── travel.ts           # 行程 / 对话 / 上传 / SSE
+│   ├── errors.ts           # ApiError / 响应错误映射
+│   ├── sse.ts              # SSE JSON 消费
+│   └── travel/             # 行程域 API（按能力拆分）
+│       ├── index.ts
+│       ├── recommend.ts / recommendStream.ts
+│       ├── chat.ts / conversations.ts / plans.ts
+│       ├── upload.ts / location.ts / types.ts
 └── utils/
     ├── auth.ts             # Token 会话
     ├── clientId.ts         # X-Client-Id
@@ -93,6 +92,7 @@ src/
     ├── imageCompress.ts    # 图片压缩
     ├── geolocation.ts      # 定位
     └── debounce.ts
+Dockerfile / nginx.conf     # 静态资源 + /api SSE 反代
 ```
 
 ## 路由与页面
@@ -114,26 +114,31 @@ src/
 
 - `register` / `login` / `fetchMe` / `logout`
 
-### 行程与对话 `api/travel.ts`
+### 行程与对话 `api/travel/*`
 
-**REST**
+从 `@/api/travel` 统一导出（`index.ts`）。
 
-- `fetchTravelRecommend` — 行程推荐
+**REST（Axios）**
+
 - `fetchPlans` / `fetchPlanDetail` / `deletePlan` — 行程记录
 - `fetchConversations` / `fetchConversationDetail` / `createConversation` / `updateConversation` / `deleteConversation` — 会话管理
 - `uploadTravelImage` — 图片上传
 - `reverseGeocodeLocation` — 逆地理编码
 
-**SSE（原生 fetch）**
+**SSE（原生 fetch + `api/sse.ts`）**
 
+- `streamTravelRecommend` → `POST /api/travel/recommend`  
+  事件：`stage` / `meta` / `day` / `budget` / `done` / `error`（限流带 `retryAfter`）
 - `streamTravelChat` → `POST /api/travel/chat`  
-  按 SSE 逐段回调 `content`；可传 `conversationId` 续聊，省略则后端新建并在 `done` 中回传 id。
+  按 SSE 回调 `chunk`；可传 `conversationId` 续聊，省略则后端新建并在 `done` 中回传 id
 
 ### HTTP 客户端 `api/axiosRequest.ts`
 
 - `baseURL: /api`
 - 请求拦截：注入 `Authorization: Bearer <token>`、`X-Client-Id`
 - 响应拦截：校验 `status === ok`；`401` 时清除本地会话
+
+开发代理（`vite.config.ts`）：`/api` → `http://localhost:5000`，`timeout` / `proxyTimeout` 为 `0`，避免长 SSE 被 Vite 掐断。
 
 ## Chat 模块数据流
 
@@ -166,6 +171,29 @@ flowchart TB
 | `useChatHistory`      | 会话列表抽屉、置顶 / 重命名 / 删除            |
 | `useChatScroll`       | 贴底滚动与用户上滑打断                        |
 
+## 行程规划模块
+
+`Home.vue` 校验表单后跳转 `/detail?city&budget&days`；`Detail.vue` 通过 `usePlanLoad` 拉流或读历史。
+
+```mermaid
+flowchart LR
+  Home[Home 表单] -->|query| Detail[Detail.vue]
+  Detail --> Load[usePlanLoad]
+  Load -->|有 id| REST[fetchPlanDetail]
+  Load -->|无 id| SSE[streamTravelRecommend]
+  SSE --> Merge[mergePlanEvent]
+  Merge --> UI[PlanLoading / PlanResult / PlanErrorState]
+```
+
+| 模块 | 职责 |
+|------|------|
+| `usePlanLoad` | 连接超时、块空闲检测、总时长、限流倒计时、Abort |
+| `mergePlanEvent` | 把 `meta` / `day` / `budget` / `done` 合并进局部 `TravelPlan` |
+| `classifyError` / `hints` | 错误种类与用户可读提示 |
+| `timeouts.ts` | 连接 12s、块空闲 15s、首包慢 8s；总超时 ≈ `30s + days×20s` |
+
+表单约束与后端一致：预算 ≥ 100 元，天数有效正整数（后端上限 30）。
+
 ## 横切能力
 
 | 能力       | 实现                                                     |
@@ -175,3 +203,25 @@ flowchart TB
 | 多模态     | `imageCompress` → `uploadTravelImage` → `sceneHint` 加权 |
 | 内容渲染   | `marked` + `DOMPurify` → `renderMarkdown`                |
 | 定位       | `geolocation` + 可选 `reverseGeocodeLocation`            |
+
+## Docker
+
+H5 镜像用 Nginx 托管静态资源，并把 `/api/` 反代到后端服务名 `server:5000`（见 `nginx.conf`）。SSE 相关：`proxy_buffering off`、读写超时 3600s。
+
+```bash
+docker build -t travel-h5 .
+# 需与后端处于同一网络，且后端容器 / 服务名为 server
+docker run --rm -p 8080:80 travel-h5
+```
+
+本地开发不必起 H5 容器：`npm run dev` + 本机后端 `:5000` 即可。
+
+## 故障排查
+
+| 现象 | 排查 |
+|------|------|
+| 开发时对话 / 规划卡住或中断 | 确认后端在 `:5000`；Vite proxy 超时已关，勿再套一层会缓冲 SSE 的代理 |
+| 规划页一直 connecting | 12s 连接超时；检查网络与后端 `/api/heartbeat` |
+| `rate_limited` 倒计时 | 后端 SSE `error.code === RATE_LIMITED`；等待 `retryAfter` 后重试 |
+| Docker 下 `/api` 502 | Compose 中后端服务名须为 `server`，与 `nginx.conf` 一致 |
+| 登录态丢失 | Axios 收到 `401` 会清本地 Token；核对后端 `JWT_SECRET` |
