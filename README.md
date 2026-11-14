@@ -194,6 +194,27 @@ flowchart LR
 
 表单约束与后端一致：预算 ≥ 100 元，天数有效正整数（后端上限 30）。
 
+## 鉴权与匿名合并
+
+| 本地键 | 用途 |
+|--------|------|
+| `travel-client-id` | 稳定 `X-Client-Id`（`utils/clientId`，首次 `randomUUID`） |
+| `travel-auth-token` / `travel-auth-user` | JWT 与用户缓存（`utils/auth`） |
+
+登录 / 注册（`api/auth.ts`）会把当前 `clientId` 一并提交；后端合并匿名会话与规划后返回 token。Axios 拦截器始终带上 Bearer（若有）与 `X-Client-Id`；`401` 清本地会话。登出调 `/auth/logout` 后仍清本地（网络失败也清）。
+
+## 多模态场景快捷入口
+
+Chat 空态三条入口（`composables/chat/types.ts` → `CHAT_SCENE_SHORTCUTS`）：
+
+| sceneHint | 文案 | 默认预填 |
+|-----------|------|----------|
+| `spot_sign` | 景点/路牌 | 帮我看看这是哪里，值不值得去 |
+| `ticket_itinerary` | 门票/行程 | 帮我识别这张票/行程单的关键信息 |
+| `food_menu` | 美食/价目 | 按这份菜单帮我推荐，兼顾预算 |
+
+`useChatSend`：选快捷入口 → 设 `sceneHint` + 预填草稿；发消息前可压缩上传图片；`spot_sign` / `food_menu` 默认尝试附带定位。结构化抽取在服务端（需 `ENABLE_SCENE_PIPELINE=1`）；H5 侧 `scenes.ts` 仅对齐类型与脱敏展示。
+
 ## 横切能力
 
 | 能力       | 实现                                                     |
@@ -225,3 +246,5 @@ docker run --rm -p 8080:80 travel-h5
 | `rate_limited` 倒计时 | 后端 SSE `error.code === RATE_LIMITED`；等待 `retryAfter` 后重试 |
 | Docker 下 `/api` 502 | Compose 中后端服务名须为 `server`，与 `nginx.conf` 一致 |
 | 登录态丢失 | Axios 收到 `401` 会清本地 Token；核对后端 `JWT_SECRET` |
+| 登录后看不到匿名会话 / 规划 | 确认注册登录请求带了同一 `travel-client-id`；换浏览器或清 localStorage 会丢匿名侧数据 |
+| 场景快捷入口无结构化结果 | 后端默认关闭场景管线；需服务端 `ENABLE_SCENE_PIPELINE=1` + Vision 模型 |
