@@ -132,6 +132,21 @@ Dockerfile / nginx.conf     # 静态资源 + /api SSE 反代
 - `streamTravelChat` → `POST /api/travel/chat`  
   按 SSE 回调 `chunk`；可传 `conversationId` 续聊，省略则后端新建并在 `done` 中回传 id
 
+**规划载荷形状**（与后端 `recommendPrompt` / `TravelPlan` 对齐，见 `api/travel/recommend.ts`）：
+
+| 事件 / 字段 | 形状 |
+|-------------|------|
+| `meta` | `{ city?, days?, totalBudget? }` |
+| `day` | `{ day, date, morning, afternoon, evening }`；时段含 `spot` / `duration` / `ticket` / `transportation` / `description` |
+| `budget` | `{ accommodation, food, transportation, tickets, other }`（数字） |
+| `done` | 完整 `TravelPlan`；可能含 `id`、`tips`、`warnings`；`success === false` 时前端抛错 |
+
+`mergePlanEvent`：按 `day` 号覆盖同日；`done` 整包替换局部合并结果。
+
+**聊天 `done`**：服务端 `content` 为 `{ conversationId, content, usage }`；H5 `streamTravelChat` 只取前两者写入结果，`usage`（上下文窗口统计）目前未展示。
+
+**上传**：`uploadTravelImage` → multipart field `file`；成功返回 `{ id, url, mime, width?, height? }`。随后 chat 只传 `{ id, type: "image" }`（最多 3）。常见失败文案来自后端：MIME 不符、>5MB、缺 `file`、附件非当前 owner。
+
 ### HTTP 客户端 `api/axiosRequest.ts`
 
 - `baseURL: /api`
@@ -248,3 +263,5 @@ docker run --rm -p 8080:80 travel-h5
 | 登录态丢失 | Axios 收到 `401` 会清本地 Token；核对后端 `JWT_SECRET` |
 | 登录后看不到匿名会话 / 规划 | 确认注册登录请求带了同一 `travel-client-id`；换浏览器或清 localStorage 会丢匿名侧数据 |
 | 场景快捷入口无结构化结果 | 后端默认关闭场景管线；需服务端 `ENABLE_SCENE_PIPELINE=1` + Vision 模型 |
+| 发图报 `Invalid attachment` | 附件须属当前 owner；登录后勿引用登录前匿名上传的 id，或重新上传 |
+| 上传被拒 | 仅 JPEG/PNG/WebP，≤5MB，字段名 `file`；压缩后再传（`imageCompress`） |
