@@ -123,7 +123,16 @@ Dockerfile / nginx.conf     # 静态资源 + /api SSE 反代
 - `fetchPlans` / `fetchPlanDetail` / `deletePlan` — 行程记录
 - `fetchConversations` / `fetchConversationDetail` / `createConversation` / `updateConversation` / `deleteConversation` — 会话管理
 - `uploadTravelImage` — 图片上传
-- `reverseGeocodeLocation` — 逆地理编码
+- `reverseGeocodeLocation(lat, lon)` — 逆地理；成功形状 `{ lat, lon, city, displayName }`（见后端 `/location/reverse`）
+
+**会话 PATCH**（`updateConversation` → `PATCH /travel/conversations/:id`）：
+
+| 字段 | 用法 |
+|------|------|
+| `title?` | 重命名；前端先 trim，空串本地拦截；后端再截断至 40 字 |
+| `pinned?` | 置顶 / 取消置顶；`useChatHistory.togglePinConversation` 取反后写回 |
+
+列表：服务端已按 `pinned DESC, updatedAt DESC`；抽屉打开后 `sortConversations` 再排一次（同规则）。摘要含 `preview`（最近消息文本或 `[图片]`）。
 
 **SSE（原生 fetch + `api/sse.ts`）**
 
@@ -183,8 +192,10 @@ flowchart TB
 | --------------------- | --------------------------------------------- |
 | `useChatConversation` | 当前会话绑定、历史消息加载、路由同步          |
 | `useChatSend`         | 输入草稿、附件、场景快捷入口、流式发送 / 停止 |
-| `useChatHistory`      | 会话列表抽屉、置顶 / 重命名 / 删除            |
+| `useChatHistory`      | 会话列表抽屉、长按菜单、置顶 / 内联重命名 / 删除 |
 | `useChatScroll`       | 贴底滚动与用户上滑打断                        |
+
+历史抽屉交互（`useChatHistory`）：长按条目弹出菜单 → 置顶、重命名、删除；重命名为行内输入，Enter 提交 / Esc 取消；删除当前会话会重置到空聊并清路由。
 
 ## 行程规划模块
 
@@ -238,7 +249,14 @@ Chat 空态三条入口（`composables/chat/types.ts` → `CHAT_SCENE_SHORTCUTS`
 | 客户端标识 | `utils/clientId` → 请求头 `X-Client-Id`                  |
 | 多模态     | `imageCompress` → `uploadTravelImage` → `sceneHint` 加权 |
 | 内容渲染   | `marked` + `DOMPurify` → `renderMarkdown`                |
-| 定位       | `geolocation` + 可选 `reverseGeocodeLocation`            |
+| 定位       | `utils/geolocation`：按需 `getUserLocation`，缓存 10min；反查失败仍返回 lat/lon |
+
+**何时附带定位**（`needsUserLocation`，避免进页弹权限）：
+
+- 文案匹配「附近 / 当前位置 / 当地」等显式意图；或
+- 问天气/出行类且未点名已知城市列表中的目的地
+
+定位超时 8s；反查走 `reverseGeocodeLocation`。失败只打 warn，chat 仍可只带坐标或完全不带 `location`。
 
 ## Docker
 
@@ -265,3 +283,7 @@ docker run --rm -p 8080:80 travel-h5
 | 场景快捷入口无结构化结果 | 后端默认关闭场景管线；需服务端 `ENABLE_SCENE_PIPELINE=1` + Vision 模型 |
 | 发图报 `Invalid attachment` | 附件须属当前 owner；登录后勿引用登录前匿名上传的 id，或重新上传 |
 | 上传被拒 | 仅 JPEG/PNG/WebP，≤5MB，字段名 `file`；压缩后再传（`imageCompress`） |
+| 有定位无城市名 | 反查 502/超时；消息仍可发送，仅缺 `city`/`displayName`；查后端出站与 Nominatim UA |
+| 浏览器不弹定位 | 仅当 `needsUserLocation` 或场景快捷入口触发；HTTPS / 本机权限需已允许 |
+| 置顶后顺序乱 | 前端与后端均为置顶优先 + `updatedAt` 降序；刷新抽屉会重新 `fetchConversations` |
+| 重命名失败 | 空标题本地拦截；后端空串 400；超长由服务端截到 40 字 |
