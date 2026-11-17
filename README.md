@@ -125,6 +125,16 @@ Dockerfile / nginx.conf     # 静态资源 + /api SSE 反代
 - `uploadTravelImage` — 图片上传
 - `reverseGeocodeLocation(lat, lon)` — 逆地理；成功形状 `{ lat, lon, city, displayName }`（见后端 `/location/reverse`）
 
+**规划记录**（`api/travel/plans.ts` → `/travel/plans`）：
+
+| API | 返回 |
+|-----|------|
+| `fetchPlans` | `PlanSummary[]`：`id` / `city` / `days` / `totalBudget` / `title` / `createdAt` / `updatedAt` |
+| `fetchPlanDetail(id)` | `PlanDetail` = Summary + `plan: TravelPlan`；无数据抛错 |
+| `deletePlan(id)` | 无 body；成功后列表页本地 filter 掉该项 |
+
+`title` 由后端派生（`{city}行程规划 · {days}天`）。`PlanRecords` 点进详情走 `/detail?id=` → `usePlanLoad` 读 `fetchPlanDetail`（不再 SSE）。生成规划时需带同一 `X-Client-Id`，否则 `done` 可能无 `id`、记录列表为空。
+
 **会话 PATCH**（`updateConversation` → `PATCH /travel/conversations/:id`）：
 
 | 字段 | 用法 |
@@ -140,6 +150,16 @@ Dockerfile / nginx.conf     # 静态资源 + /api SSE 反代
   事件：`stage` / `meta` / `day` / `budget` / `done` / `error`（限流带 `retryAfter`）
 - `streamTravelChat` → `POST /api/travel/chat`  
   按 SSE 回调 `chunk`；可传 `conversationId` 续聊，省略则后端新建并在 `done` 中回传 id
+
+**聊天请求可选字段**（`streamTravelChat` / `ChatLocationPayload`）：
+
+| 字段 | 说明 |
+|------|------|
+| `attachments` | `{ id, type: "image" }[]`，最多 3 |
+| `sceneHint` | `spot_sign` / `ticket_itinerary` / `food_menu` |
+| `location` | `{ lat, lon, accuracy?, city?, displayName? }`；仅在 `needsUserLocation` 或场景入口触发定位后附带 |
+
+`lat`/`lon` 为数字才会被后端接受；`city`/`displayName` 来自前端 `reverseGeocodeLocation`，失败时仍可只传坐标（后端可能再逆地理一次，失败 soft-fail）。
 
 **规划载荷形状**（与后端 `recommendPrompt` / `TravelPlan` 对齐，见 `api/travel/recommend.ts`）：
 
@@ -285,5 +305,7 @@ docker run --rm -p 8080:80 travel-h5
 | 上传被拒 | 仅 JPEG/PNG/WebP，≤5MB，字段名 `file`；压缩后再传（`imageCompress`） |
 | 有定位无城市名 | 反查 502/超时；消息仍可发送，仅缺 `city`/`displayName`；查后端出站与 Nominatim UA |
 | 浏览器不弹定位 | 仅当 `needsUserLocation` 或场景快捷入口触发；HTTPS / 本机权限需已允许 |
+| `/plans` 列表为空 | 生成时未带 `travel-client-id`，或 SSE `done` 无 `id`（落库失败）；与登录合并用同一 clientId |
+| 点开记录无详情 | `fetchPlanDetail` 404：记录属其他 owner，或匿名/登录身份切换后 client 不一致 |
 | 置顶后顺序乱 | 前端与后端均为置顶优先 + `updatedAt` 降序；刷新抽屉会重新 `fetchConversations` |
 | 重命名失败 | 空标题本地拦截；后端空串 400；超长由服务端截到 40 字 |
