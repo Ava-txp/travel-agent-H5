@@ -114,6 +114,16 @@ Dockerfile / nginx.conf     # 静态资源 + /api SSE 反代
 
 - `register` / `login` / `fetchMe` / `logout`
 
+请求自动附带当前 `clientId`（与 `X-Client-Id` 同源）。成功时后端 `data` 含：
+
+| 字段 | 说明 |
+|------|------|
+| `token` / `user` | JWT 与公开用户信息；`persist` 写入 localStorage |
+| `mergedConversations` | 本次合并的匿名会话数；`Login.vue` 大于 0 时 toast「已同步 N 个会话」 |
+| `mergedPlans` | 后端同样返回；**前端 `AuthResult` 未声明、UI 未展示**，但规划仍会合并进账号 |
+
+`fetchMe` → `GET /auth/me`；`logout` 调 `POST /auth/logout` 后无论成败都 `clearAuthSession`。
+
 ### 行程与对话 `api/travel/*`
 
 从 `@/api/travel` 统一导出（`index.ts`）。
@@ -174,7 +184,7 @@ Dockerfile / nginx.conf     # 静态资源 + /api SSE 反代
 
 **聊天 `done`**：服务端 `content` 为 `{ conversationId, content, usage }`；H5 `streamTravelChat` 只取前两者写入结果，`usage`（上下文窗口统计）目前未展示。
 
-**上传**：`uploadTravelImage` → multipart field `file`；成功返回 `{ id, url, mime, width?, height? }`。随后 chat 只传 `{ id, type: "image" }`（最多 3）。常见失败文案来自后端：MIME 不符、>5MB、缺 `file`、附件非当前 owner。
+**上传**：`uploadTravelImage` → multipart field `file`（Axios 须去掉默认 `Content-Type`，让浏览器带 boundary）；成功返回 `{ id, url, mime, width?, height? }`。`url` 为后端相对路径 `/api/travel/uploads/files/<id>`，经 Vite/Nginx 同源反代可读；后端对该 GET **无鉴权**且 `Cache-Control` 约一年 immutable。随后 chat 只传 `{ id, type: "image" }`（最多 3）。常见失败文案来自后端：MIME 不符、>5MB、缺 `file`、附件非当前 owner。
 
 ### HTTP 客户端 `api/axiosRequest.ts`
 
@@ -247,7 +257,9 @@ flowchart LR
 | `travel-client-id` | 稳定 `X-Client-Id`（`utils/clientId`，首次 `randomUUID`） |
 | `travel-auth-token` / `travel-auth-user` | JWT 与用户缓存（`utils/auth`） |
 
-登录 / 注册（`api/auth.ts`）会把当前 `clientId` 一并提交；后端合并匿名会话与规划后返回 token。Axios 拦截器始终带上 Bearer（若有）与 `X-Client-Id`；`401` 清本地会话。登出调 `/auth/logout` 后仍清本地（网络失败也清）。
+登录 / 注册（`api/auth.ts`）会把当前 `clientId` 一并提交；后端合并匿名会话与规划后返回 token + `mergedConversations` / `mergedPlans`。Axios 拦截器始终带上 Bearer（若有）与 `X-Client-Id`；`401` 清本地会话。登出调 `/auth/logout` 后仍清本地（网络失败也清）。
+
+约束与后端一致：账号为大陆手机号或邮箱；密码 ≥ 6；注册可选昵称。`Login.vue` 仅根据 `mergedConversations` 提示同步会话——规划合并无单独 toast，可在「规划记录」页确认。
 
 ## 多模态场景快捷入口
 
@@ -300,6 +312,8 @@ docker run --rm -p 8080:80 travel-h5
 | Docker 下 `/api` 502 | Compose 中后端服务名须为 `server`，与 `nginx.conf` 一致 |
 | 登录态丢失 | Axios 收到 `401` 会清本地 Token；核对后端 `JWT_SECRET` |
 | 登录后看不到匿名会话 / 规划 | 确认注册登录请求带了同一 `travel-client-id`；换浏览器或清 localStorage 会丢匿名侧数据 |
+| 登录 toast 只提会话、规划却已在 | 预期行为：UI 只读 `mergedConversations`；`mergedPlans` 仍由后端合并，打开规划记录页核对 |
+| 图片 URL 可开但发送报 Invalid attachment | 读文件接口不校验 owner；chat 引用须属当前登录/匿名身份，登录后勿复用登录前匿名上传 id |
 | 场景快捷入口无结构化结果 | 后端默认关闭场景管线；需服务端 `ENABLE_SCENE_PIPELINE=1` + Vision 模型 |
 | 发图报 `Invalid attachment` | 附件须属当前 owner；登录后勿引用登录前匿名上传的 id，或重新上传 |
 | 上传被拒 | 仅 JPEG/PNG/WebP，≤5MB，字段名 `file`；压缩后再传（`imageCompress`） |
