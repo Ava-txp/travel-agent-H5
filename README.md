@@ -225,7 +225,9 @@ flowchart TB
 | `useChatHistory`      | 会话列表抽屉、长按菜单、置顶 / 内联重命名 / 删除 |
 | `useChatScroll`       | 贴底滚动与用户上滑打断                        |
 
-历史抽屉交互（`useChatHistory`）：长按条目弹出菜单 → 置顶、重命名、删除；重命名为行内输入，Enter 提交 / Esc 取消；删除当前会话会重置到空聊并清路由。
+`useChatScroll`（`composables/chat/useChatScroll.ts`）：距底 ≤ `BOTTOM_THRESHOLD`（80px）视为贴底并置 `stickToBottom`；用户上滑后内容更新不再自动滚。流式 chunk 经 `requestAnimationFrame` 合并为一帧最多滚一次；`scrollTop` 即时赋值（避免 `smooth` 排队误判），并在下一帧再贴一次以适配 Markdown 布局结算。强制滚底传 `{ force: true }`（如切会话）。
+
+历史抽屉交互（`useChatHistory`）：长按条目弹出菜单 → 置顶、重命名、删除；重命名为行内输入，Enter 提交 / Esc 取消；删除当前会话会重置到空聊并清路由。最近会话 id 写入 `travel-last-conversation-id`（`LAST_CONVERSATION_KEY`），进 Chat 时可恢复。
 
 ## 行程规划模块
 
@@ -256,8 +258,9 @@ flowchart LR
 |--------|------|
 | `travel-client-id` | 稳定 `X-Client-Id`（`utils/clientId`，首次 `randomUUID`） |
 | `travel-auth-token` / `travel-auth-user` | JWT 与用户缓存（`utils/auth`） |
+| `travel-last-conversation-id` | 最近打开的会话，Chat 进页恢复用 |
 
-登录 / 注册（`api/auth.ts`）会把当前 `clientId` 一并提交；后端合并匿名会话与规划后返回 token + `mergedConversations` / `mergedPlans`。Axios 拦截器始终带上 Bearer（若有）与 `X-Client-Id`；`401` 清本地会话。登出调 `/auth/logout` 后仍清本地（网络失败也清）。
+登录 / 注册（`api/auth.ts`）会把当前 `clientId` 一并提交；后端合并匿名会话与规划后返回 token + `mergedConversations` / `mergedPlans`。Axios 拦截器始终带上 Bearer（若有）与 `X-Client-Id`；`401` 清本地会话。登出调 `/auth/logout` 后仍清本地（网络失败也清）。REST 错误经 `api/errors.ts` 归类为 `timeout` / `rate_limited` / `network` / `auth` / `server` / `unknown`（`ApiError.kind`）。
 
 约束与后端一致：账号为大陆手机号或邮箱；密码 ≥ 6；注册可选昵称。`Login.vue` 仅根据 `mergedConversations` 提示同步会话——规划合并无单独 toast，可在「规划记录」页确认。
 
@@ -283,12 +286,22 @@ Chat 空态三条入口（`composables/chat/types.ts` → `CHAT_SCENE_SHORTCUTS`
 | 内容渲染   | `marked` + `DOMPurify` → `renderMarkdown`                |
 | 定位       | `utils/geolocation`：按需 `getUserLocation`，缓存 10min；反查失败仍返回 lat/lon |
 
+**图片压缩**（`utils/imageCompress.ts`，发送前强制走）：
+
+| 约束 | 值 |
+|------|----|
+| 允许 MIME | JPEG / PNG / WebP |
+| 每轮附件上限 | `MAX_ATTACHMENTS_PER_SEND = 3` |
+| 压缩后大小 | ≤ 5MB（与后端 `MAX_UPLOAD_BYTES` 对齐） |
+| 长边 | ≤ 1600px |
+| 输出 | 一律 JPEG，质量起 0.8，超限逐步降到 ≥0.4；透明图铺白底 |
+
 **何时附带定位**（`needsUserLocation`，避免进页弹权限）：
 
 - 文案匹配「附近 / 当前位置 / 当地」等显式意图；或
 - 问天气/出行类且未点名已知城市列表中的目的地
 
-定位超时 8s；反查走 `reverseGeocodeLocation`。失败只打 warn，chat 仍可只带坐标或完全不带 `location`。
+定位超时 8s，`maximumAge` / 缓存 TTL 均为 10min，并发请求合并为单次 inflight；反查走 `reverseGeocodeLocation`。失败只打 warn，chat 仍可只带坐标或完全不带 `location`。Profile 页进页调 `fetchMe` 刷新缓存用户；失败清本地会话；部分菜单项仍为「功能开发中」占位。
 
 ## Docker
 
@@ -317,9 +330,13 @@ docker run --rm -p 8080:80 travel-h5
 | 场景快捷入口无结构化结果 | 后端默认关闭场景管线；需服务端 `ENABLE_SCENE_PIPELINE=1` + Vision 模型 |
 | 发图报 `Invalid attachment` | 附件须属当前 owner；登录后勿引用登录前匿名上传的 id，或重新上传 |
 | 上传被拒 | 仅 JPEG/PNG/WebP，≤5MB，字段名 `file`；压缩后再传（`imageCompress`） |
+| 一次选太多图 | 前端每轮最多 3 张（`MAX_ATTACHMENTS_PER_SEND`） |
+| 流式时滚不到底 / 乱跳 | 上滑后 `stickToBottom=false` 是预期；贴底阈值 80px；勿改成 `scrollIntoView({behavior:'smooth'})` |
 | 有定位无城市名 | 反查 502/超时；消息仍可发送，仅缺 `city`/`displayName`；查后端出站与 Nominatim UA |
 | 浏览器不弹定位 | 仅当 `needsUserLocation` 或场景快捷入口触发；HTTPS / 本机权限需已允许 |
 | `/plans` 列表为空 | 生成时未带 `travel-client-id`，或 SSE `done` 无 `id`（落库失败）；与登录合并用同一 clientId |
 | 点开记录无详情 | `fetchPlanDetail` 404：记录属其他 owner，或匿名/登录身份切换后 client 不一致 |
 | 置顶后顺序乱 | 前端与后端均为置顶优先 + `updatedAt` 降序；刷新抽屉会重新 `fetchConversations` |
 | 重命名失败 | 空标题本地拦截；后端空串 400；超长由服务端截到 40 字 |
+| 进 Chat 未恢复上次会话 | 查 `travel-last-conversation-id`；清存储或换浏览器会丢 |
+| Profile 显示未登录但有 Token | `fetchMe` 失败会清会话；核对后端 `JWT_SECRET` / Token 是否过期 |
