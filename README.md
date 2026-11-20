@@ -131,9 +131,10 @@ Dockerfile / nginx.conf     # 静态资源 + /api SSE 反代
 **REST（Axios）**
 
 - `fetchPlans` / `fetchPlanDetail` / `deletePlan` — 行程记录
-- `fetchConversations` / `fetchConversationDetail` / `createConversation` / `updateConversation` / `deleteConversation` — 会话管理
+- `fetchConversations` / `fetchConversationDetail` / `updateConversation` / `deleteConversation` — 会话管理（UI 主路径）
+- `createConversation` — API 已导出，**新建对话 UI 不调用**（本地清空后首轮 `streamTravelChat` 省略 id，由后端创建）
 - `uploadTravelImage` — 图片上传
-- `reverseGeocodeLocation(lat, lon)` — 逆地理；成功形状 `{ lat, lon, city, displayName }`（见后端 `/location/reverse`）
+- `reverseGeocodeLocation(lat, lon)` — `GET /api/travel/location/reverse`；成功形状 `{ lat, lon, city, displayName }`
 
 **规划记录**（`api/travel/plans.ts` → `/travel/plans`）：
 
@@ -180,7 +181,7 @@ Dockerfile / nginx.conf     # 静态资源 + /api SSE 反代
 | `budget` | `{ accommodation, food, transportation, tickets, other }`（数字） |
 | `done` | 完整 `TravelPlan`；可能含 `id`、`tips`、`warnings`；`success === false` 时前端抛错 |
 
-`mergePlanEvent`：按 `day` 号覆盖同日；`done` 整包替换局部合并结果。
+`applyRecommendEvent`（文件 `mergePlanEvent.ts`）：按 `day` 号覆盖同日；`done` 整包替换局部合并结果。
 
 **聊天 `done`**：服务端 `content` 为 `{ conversationId, content, usage }`；H5 `streamTravelChat` 只取前两者写入结果，`usage`（上下文窗口统计）目前未展示。
 
@@ -189,10 +190,11 @@ Dockerfile / nginx.conf     # 静态资源 + /api SSE 反代
 ### HTTP 客户端 `api/axiosRequest.ts`
 
 - `baseURL: /api`
+- REST `timeout: 120000`（120s）
 - 请求拦截：注入 `Authorization: Bearer <token>`、`X-Client-Id`
 - 响应拦截：校验 `status === ok`；`401` 时清除本地会话
 
-开发代理（`vite.config.ts`）：`/api` → `http://localhost:5000`，`timeout` / `proxyTimeout` 为 `0`，避免长 SSE 被 Vite 掐断。
+开发代理（`vite.config.ts`）：`/api` → `http://localhost:5000`，`timeout` / `proxyTimeout` 为 `0`，避免长 SSE 被 Vite 掐断。Chat SSE 错误多为原始 `Error`（无 `ApiError.kind`）；规划 SSE 才映射 `RATE_LIMITED` / `PARSE_FAILED`。
 
 ## Chat 模块数据流
 
@@ -225,9 +227,13 @@ flowchart TB
 | `useChatHistory`      | 会话列表抽屉、长按菜单、置顶 / 内联重命名 / 删除 |
 | `useChatScroll`       | 贴底滚动与用户上滑打断                        |
 
+**会话路由契约**：加载 / 续聊以 `/chat?id=` 为准（`router.replace` 同步）。「新对话」只做本地 `resetToEmptyChat`（清消息、清 query），**不**调 `createConversation`；首条消息省略 `conversationId`，后端创建后经 `done` → `bindConversationId` 写回路由。
+
+`useChatSend`：发出后 `thinking=true` 直至首个 chunk；按钮切换为「停止」→ `AbortController.abort()`，**保留已展示 partial**，不弹错误 toast。助手 Markdown 更新另经 rAF 合并（与滚动 rAF 独立）。
+
 `useChatScroll`（`composables/chat/useChatScroll.ts`）：距底 ≤ `BOTTOM_THRESHOLD`（80px）视为贴底并置 `stickToBottom`；用户上滑后内容更新不再自动滚。流式 chunk 经 `requestAnimationFrame` 合并为一帧最多滚一次；`scrollTop` 即时赋值（避免 `smooth` 排队误判），并在下一帧再贴一次以适配 Markdown 布局结算。强制滚底传 `{ force: true }`（如切会话）。
 
-历史抽屉交互（`useChatHistory`）：长按条目弹出菜单 → 置顶、重命名、删除；重命名为行内输入，Enter 提交 / Esc 取消；删除当前会话会重置到空聊并清路由。最近会话 id 写入 `travel-last-conversation-id`（`LAST_CONVERSATION_KEY`），进 Chat 时可恢复。
+历史抽屉交互（`useChatHistory`）：长按条目弹出菜单 → 置顶、重命名、删除；重命名为行内输入，Enter 提交 / Esc 取消；删除当前会话会重置到空聊并清路由。`travel-last-conversation-id` 仅在绑定/清空时 **写入或删除**，进页**不会** `getItem` 自动恢复——恢复靠 `/chat?id=` 或历史抽屉点选。
 
 ## 行程规划模块
 
@@ -239,18 +245,20 @@ flowchart LR
   Detail --> Load[usePlanLoad]
   Load -->|有 id| REST[fetchPlanDetail]
   Load -->|无 id| SSE[streamTravelRecommend]
-  SSE --> Merge[mergePlanEvent]
+  SSE --> Merge[applyRecommendEvent]
   Merge --> UI[PlanLoading / PlanResult / PlanErrorState]
 ```
 
 | 模块 | 职责 |
 |------|------|
 | `usePlanLoad` | 连接超时、块空闲检测、总时长、限流倒计时、Abort |
-| `mergePlanEvent` | 把 `meta` / `day` / `budget` / `done` 合并进局部 `TravelPlan` |
+| `applyRecommendEvent` | 把 `meta` / `day` / `budget` / `done` 合并进局部 `TravelPlan` |
 | `classifyError` / `hints` | 错误种类与用户可读提示 |
 | `timeouts.ts` | 连接 12s、块空闲 15s、首包慢 8s；总超时 ≈ `30s + days×20s` |
 
-表单约束与后端一致：预算 ≥ 100 元，天数有效正整数（后端上限 30）。
+`PlanLoadState`：`connecting` → `waiting_ttft` / `slow_ttft` → `streaming` / `idle_gap` → `success` | `failed` | `rate_limited`；用户取消记为 `canceled`。历史详情硬超时 **30s**；生成路径用 `totalTimeoutMs(days)`。
+
+表单约束：前端天数 **1–30**、预算 ≥ 100，与后端一致。
 
 ## 鉴权与匿名合并
 
@@ -258,7 +266,7 @@ flowchart LR
 |--------|------|
 | `travel-client-id` | 稳定 `X-Client-Id`（`utils/clientId`，首次 `randomUUID`） |
 | `travel-auth-token` / `travel-auth-user` | JWT 与用户缓存（`utils/auth`） |
-| `travel-last-conversation-id` | 最近打开的会话，Chat 进页恢复用 |
+| `travel-last-conversation-id` | 绑定会话时写入；**当前 UI 不读它恢复**，恢复靠 `/chat?id=` |
 
 登录 / 注册（`api/auth.ts`）会把当前 `clientId` 一并提交；后端合并匿名会话与规划后返回 token + `mergedConversations` / `mergedPlans`。Axios 拦截器始终带上 Bearer（若有）与 `X-Client-Id`；`401` 清本地会话。登出调 `/auth/logout` 后仍清本地（网络失败也清）。REST 错误经 `api/errors.ts` 归类为 `timeout` / `rate_limited` / `network` / `auth` / `server` / `unknown`（`ApiError.kind`）。
 
@@ -305,7 +313,7 @@ Chat 空态三条入口（`composables/chat/types.ts` → `CHAT_SCENE_SHORTCUTS`
 
 ## Docker
 
-H5 镜像用 Nginx 托管静态资源，并把 `/api/` 反代到后端服务名 `server:5000`（见 `nginx.conf`）。SSE 相关：`proxy_buffering off`、读写超时 3600s。
+H5 镜像：Node 20 构建静态资源，Nginx 托管；`try_files` 回退 `index.html`（SPA）；静态资源 `expires 7d` + immutable。`/api/` 反代到后端服务名 `server:5000`（见 `nginx.conf`）。SSE：`proxy_buffering off`、读写超时 3600s。镜像 `HEALTHCHECK` 探测 `/`。
 
 ```bash
 docker build -t travel-h5 .
@@ -326,6 +334,7 @@ docker run --rm -p 8080:80 travel-h5
 | 登录态丢失 | Axios 收到 `401` 会清本地 Token；核对后端 `JWT_SECRET` |
 | 登录后看不到匿名会话 / 规划 | 确认注册登录请求带了同一 `travel-client-id`；换浏览器或清 localStorage 会丢匿名侧数据 |
 | 登录 toast 只提会话、规划却已在 | 预期行为：UI 只读 `mergedConversations`；`mergedPlans` 仍由后端合并，打开规划记录页核对 |
+| 登录后旧附件 Invalid attachment | 后端不合并 uploads；须重新上传（与会话/规划合并无关） |
 | 图片 URL 可开但发送报 Invalid attachment | 读文件接口不校验 owner；chat 引用须属当前登录/匿名身份，登录后勿复用登录前匿名上传 id |
 | 场景快捷入口无结构化结果 | 后端默认关闭场景管线；需服务端 `ENABLE_SCENE_PIPELINE=1` + Vision 模型 |
 | 发图报 `Invalid attachment` | 附件须属当前 owner；登录后勿引用登录前匿名上传的 id，或重新上传 |
@@ -338,5 +347,7 @@ docker run --rm -p 8080:80 travel-h5
 | 点开记录无详情 | `fetchPlanDetail` 404：记录属其他 owner，或匿名/登录身份切换后 client 不一致 |
 | 置顶后顺序乱 | 前端与后端均为置顶优先 + `updatedAt` 降序；刷新抽屉会重新 `fetchConversations` |
 | 重命名失败 | 空标题本地拦截；后端空串 400；超长由服务端截到 40 字 |
-| 进 Chat 未恢复上次会话 | 查 `travel-last-conversation-id`；清存储或换浏览器会丢 |
+| 进 Chat 没有上次会话 | 预期：须带 `/chat?id=` 或从历史抽屉打开；`travel-last-conversation-id` 不会自动恢复 |
+| 点「新对话」却调了 createConversation | UI 不会调；首轮 SSE 省略 id 即可 |
+| 停止生成后气泡半截 | 预期：abort 保留 partial，与后端可能落库部分助手消息一致 |
 | Profile 显示未登录但有 Token | `fetchMe` 失败会清会话；核对后端 `JWT_SECRET` / Token 是否过期 |
