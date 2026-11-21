@@ -249,6 +249,15 @@ flowchart LR
   Merge --> UI[PlanLoading / PlanResult / PlanErrorState]
 ```
 
+**Home 入口（`Home.vue`）**
+
+| 点 | 行为 |
+|----|------|
+| 目的地 | 只读字段 → `van-area`；数据来自 `@vant/area-data` 的 `areaList`（升级城市包需升该依赖） |
+| 热门城市 | 写死 8 城：北京/上海/广州/深圳/成都/杭州/西安/重庆；点选填入 `destination` |
+| 跳转防抖 | `debounceLeading(..., 1500)`：首次立即 `router.push`，1.5s 内重复点击忽略 |
+| 校验 | 目的地非空；预算数字且 ≥ 100；天数 1–30（与后端一致） |
+
 | 模块 | 职责 |
 |------|------|
 | `usePlanLoad` | 连接超时、块空闲检测、总时长、限流倒计时、Abort |
@@ -258,8 +267,6 @@ flowchart LR
 
 `PlanLoadState`：`connecting` → `waiting_ttft` / `slow_ttft` → `streaming` / `idle_gap` → `success` | `failed` | `rate_limited`；用户取消记为 `canceled`。历史详情硬超时 **30s**；生成路径用 `totalTimeoutMs(days)`。
 
-表单约束：前端天数 **1–30**、预算 ≥ 100，与后端一致。
-
 ## 鉴权与匿名合并
 
 | 本地键 | 用途 |
@@ -268,13 +275,19 @@ flowchart LR
 | `travel-auth-token` / `travel-auth-user` | JWT 与用户缓存（`utils/auth`） |
 | `travel-last-conversation-id` | 绑定会话时写入；**当前 UI 不读它恢复**，恢复靠 `/chat?id=` |
 
+本地 `AuthUser`（`utils/auth.ts`）：`{ id, account, nickname, createdAt }`，来自登录/注册/`fetchMe` 的公开 `user`，**不是** JWT payload（JWT 仅 `sub`/`account`）。
+
 登录 / 注册（`api/auth.ts`）会把当前 `clientId` 一并提交；后端合并匿名会话与规划后返回 token + `mergedConversations` / `mergedPlans`。Axios 拦截器始终带上 Bearer（若有）与 `X-Client-Id`；`401` 清本地会话。登出调 `/auth/logout` 后仍清本地（网络失败也清）。REST 错误经 `api/errors.ts` 归类为 `timeout` / `rate_limited` / `network` / `auth` / `server` / `unknown`（`ApiError.kind`）。
 
 约束与后端一致：账号为大陆手机号或邮箱；密码 ≥ 6；注册可选昵称。`Login.vue` 仅根据 `mergedConversations` 提示同步会话——规划合并无单独 toast，可在「规划记录」页确认。
 
+**登录回跳**：`/login?redirect=<path>`；成功后 `router.replace`，缺省 `/profile`。`Profile` 未登录时推送 `redirect=/profile`。`redirect` 须为字符串 query；当前不做 open-redirect 白名单（仅站内相对路径由调用方保证）。
+
 ## 多模态场景快捷入口
 
-Chat 空态三条入口（`composables/chat/types.ts` → `CHAT_SCENE_SHORTCUTS`）：
+Chat 空态（`ChatMessageList`，`messages.length === 0`）分两块：
+
+**拍照问问**（`CHAT_SCENE_SHORTCUTS`）：
 
 | sceneHint | 文案 | 默认预填 |
 |-----------|------|----------|
@@ -282,7 +295,11 @@ Chat 空态三条入口（`composables/chat/types.ts` → `CHAT_SCENE_SHORTCUTS`
 | `ticket_itinerary` | 门票/行程 | 帮我识别这张票/行程单的关键信息 |
 | `food_menu` | 美食/价目 | 按这份菜单帮我推荐，兼顾预算 |
 
-`useChatSend`：选快捷入口 → 设 `sceneHint` + 预填草稿；发消息前可压缩上传图片；`spot_sign` / `food_menu` 默认尝试附带定位。结构化抽取在服务端（需 `ENABLE_SCENE_PIPELINE=1`）；H5 侧 `scenes.ts` 仅对齐类型与脱敏展示。
+**常见问题**（`CHAT_FAQS`）：四条文案芯片（北京景点 / 上海美食 / 成都三日游 / 旅行保险）；点击 `faqClick` → 直接当用户问题发送，**不**带 `sceneHint`。
+
+`useChatSend`：选快捷入口 → 设 `sceneHint` + 预填草稿；发消息前可压缩上传图片；`spot_sign` / `food_menu` 默认尝试附带定位。结构化抽取在服务端（需 `ENABLE_SCENE_PIPELINE=1`）。
+
+H5 `composables/chat/scenes.ts`：类型对齐 + `maskOrderNo` / `parseBudgetFromText` / `SCENE_ANSWER_OUTLINE`。**当前无其它模块 import**——实装在服务端；前端改展示/脱敏前勿当死代码删掉契约。
 
 ## 横切能力
 
@@ -334,6 +351,8 @@ docker run --rm -p 8080:80 travel-h5
 | 登录态丢失 | Axios 收到 `401` 会清本地 Token；核对后端 `JWT_SECRET` |
 | 登录后看不到匿名会话 / 规划 | 确认注册登录请求带了同一 `travel-client-id`；换浏览器或清 localStorage 会丢匿名侧数据 |
 | 登录 toast 只提会话、规划却已在 | 预期行为：UI 只读 `mergedConversations`；`mergedPlans` 仍由后端合并，打开规划记录页核对 |
+| 登录后跳错页 | 检查 `?redirect=`；缺省进 `/profile`；Profile 入口会带 `redirect=/profile` |
+| Home 连点进了两次 Detail | 1.5s 内应被 `debounceLeading` 吞掉；若仍重复查是否绕过了 `onStartPlan` |
 | 登录后旧附件 Invalid attachment | 后端不合并 uploads；须重新上传（与会话/规划合并无关） |
 | 图片 URL 可开但发送报 Invalid attachment | 读文件接口不校验 owner；chat 引用须属当前登录/匿名身份，登录后勿复用登录前匿名上传 id |
 | 场景快捷入口无结构化结果 | 后端默认关闭场景管线；需服务端 `ENABLE_SCENE_PIPELINE=1` + Vision 模型 |
